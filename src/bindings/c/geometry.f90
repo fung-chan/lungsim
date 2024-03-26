@@ -151,6 +151,22 @@ contains
 !
 !###################################################################################
 !
+  subroutine list_tree_c() bind(C, name="list_tree_c")
+
+    use geometry, only: list_tree
+    implicit none
+    
+#if defined _WIN32 && defined __INTEL_COMPILER
+    call so_list_tree()
+#else
+    call list_tree()
+#endif
+
+  end subroutine list_tree_c
+    
+!
+!###################################################################################
+!
   subroutine import_ply_triangles_c(ply_file, filename_len) bind(C, name="import_ply_triangles_c")
 
     use iso_c_binding, only: c_ptr

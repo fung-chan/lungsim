@@ -42,6 +42,7 @@ module geometry
   public evaluate_ordering
   public get_final_real
   public get_local_node_f
+  public list_tree
   public group_elem_parent_term
   public import_node_geometry_2d
   public import_ply_triangles
@@ -1168,6 +1169,79 @@ contains
     
   end subroutine import_node_geometry_2d
 
+!!!#############################################################################
+
+  subroutine list_tree()
+
+    integer :: ne,ne0,ngen,nhrd,nmax_gen,nums(40,2),n_dr
+    real(dp) :: diameter_ratio,radii(40,2),length_diameter,lengths(40,2)
+    character(len=60) :: sub_name
+    
+    ! --------------------------------------------------------------------------
+
+    sub_name = 'list_tree'
+    call enter_exit(sub_name,1)
+
+    n_dr = 0
+    diameter_ratio = 0.0_dp
+    length_diameter = 0.0_dp
+    nums = 0
+    radii = 0.0
+    lengths = 0.0_dp
+    nmax_gen = 0
+
+    do ne = 1,num_elems
+       ngen = elem_ordrs(1,ne)
+       nhrd = elem_ordrs(2,ne)
+       nums(ngen,1) = nums(ngen,1) + 1
+       radii(ngen,1) = radii(ngen,1) + elem_field(ne_radius,ne)
+       lengths(ngen,1) = lengths(ngen,1) + elem_field(ne_length,ne)
+       nums(nhrd,2) = nums(nhrd,2) + 1
+       radii(nhrd,2) = radii(nhrd,2) + elem_field(ne_radius,ne)
+       lengths(nhrd,2) = lengths(nhrd,2) + elem_field(ne_length,ne)
+       if (ngen.gt.nmax_gen) nmax_gen = ngen
+       length_diameter = length_diameter + elem_field(ne_length,ne)/ &
+            (2.0_dp*elem_field(ne_radius,ne))
+       if(elem_cnct(-1,0,ne).ne.0)then
+          ne0 = elem_cnct(-1,1,ne)
+          if(elem_ordrs(1,ne0).ne.ngen)then
+             diameter_ratio = diameter_ratio + elem_field(ne_radius,ne)/elem_field(ne_radius,ne0)
+             n_dr = n_dr + 1
+          endif
+       endif
+    enddo
+
+    length_diameter = length_diameter/real(num_elems)
+    diameter_ratio = diameter_ratio/real(n_dr)
+
+    do ngen = 1,nmax_gen
+       radii(ngen,1) = radii(ngen,1)/real(nums(ngen,1)) ! generations
+       radii(ngen,2) = radii(ngen,2)/real(nums(ngen,2)) ! orders
+       lengths(ngen,1) = lengths(ngen,1)/real(nums(ngen,1)) ! generations
+       lengths(ngen,2) = lengths(ngen,2)/real(nums(ngen,2)) ! orders
+    enddo
+    write(*,'('' Model tree geometry:'')')
+    write(*,'(''--gen#   #brns   avLen   avRad  avL/D--'')')
+    do ngen = 1,nmax_gen
+       write(*,'(i6, i8, 3(f10.2))') ngen,nums(ngen,1),lengths(ngen,1), &
+            radii(ngen,1),lengths(ngen,1)/(2.0_dp*radii(ngen,1))
+    enddo
+    write(*,'(''--ord#   #brns   avLen   avRad  avL/D--'')')
+    do nhrd = nmax_gen,1,-1
+       write(*,'(i6, i8, 3(f10.2))') nhrd,nums(nhrd,2),lengths(nhrd,2), &
+            radii(nhrd,2),lengths(nhrd,2)/(2.0_dp*radii(nhrd,2))
+    enddo
+
+    write(*,'('' L/D ='',f10.2,''; D/Dp ='',f10.2)') length_diameter, &
+         diameter_ratio
+
+    write(*,*) 'Enter the return key to continue'
+    read(*,*)
+    
+    call enter_exit(sub_name,2)
+    
+  end subroutine list_tree
+    
 !!!#############################################################################
 
   subroutine import_ply_triangles(ply_file)
