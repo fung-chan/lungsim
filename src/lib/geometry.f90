@@ -445,6 +445,7 @@ contains
     !     Local Variables
     integer :: ibeg,iend,ierror,i_ss_end,j,ne,ne_global,&
          nn,np,np1,np2,np_global
+    logical :: internal_reorder
     character(LEN=132) :: ctemp1
     character(len=300) :: readfile
     character(LEN=40) :: sub_string
@@ -553,10 +554,20 @@ contains
     enddo
 
     call element_connectivity_1d
-    call evaluate_ordering
-
-    elem_ordrs(no_type,:) = 1 ! 0 for respiratory, 1 for conducting
-
+    ! check for child branches with lower element numbering than parents
+    internal_reorder = .false.
+    do ne = num_elems,1,-1
+       if(elem_cnct(-1,0,ne).ne.0)then
+          if(elem_cnct(-1,1,ne).gt.ne) internal_reorder = .true.
+       endif
+    enddo
+    if(internal_reorder)then
+       call internal_mesh_reorder()
+    else
+       call evaluate_ordering
+       elem_ordrs(no_type,:) = 1 ! 0 for respiratory, 1 for conducting
+    endif
+    
     call enter_exit(sub_name,2)
 
   end subroutine define_1d_elements
@@ -3033,7 +3044,7 @@ contains
     ! sequential from the stem branches down
 
     ! Local variables
-    integer :: count_elems,i,j,ne,nep,ne_old,num_branches,num_term_branches
+    integer :: count_elems,i,j,ne,nep,ne_old,ngen,num_branches,num_term_branches
     integer,allocatable :: list_branches(:),list_term_branches(:),map_to_new(:), &
          map_to_old(:),temp_elems(:),temp_elem_nodes(:,:),temp_elem_symmetry(:), &
          temp_elem_units_below(:)
@@ -3054,10 +3065,12 @@ contains
     ! work through each successive generation, incrementing elements one by one
     count_elems = 0
     num_term_branches = 1
+    ngen = 0
     list_term_branches(1) = 1 ! this assumes that the first element is the stem! 
     do while(num_term_branches.ne.0)
        num_branches = num_term_branches ! temporary, to loop over
        num_term_branches = 0 ! reset to zero and count for this generation
+       ngen = ngen + 1
        do i = 1,num_branches ! for each element in this generation
           ne = list_term_branches(i)
           count_elems = count_elems + 1
@@ -3065,18 +3078,19 @@ contains
           map_to_old(count_elems) = ne
           do j = 1,elem_cnct(1,0,ne) ! for each child
              nep = elem_cnct(1,j,ne) ! child element number
-             ! check whether there are more elements in the same branch 
-             do while(elem_cnct(1,j,nep).eq.1.and.elem_symmetry(nep).eq.1)
+             ! check whether there are more elements in the same branch
+             do while(elem_cnct(1,0,nep).eq.1.and.elem_symmetry(nep).eq.1)
                 count_elems = count_elems + 1
                 map_to_new(nep) = count_elems
                 map_to_old(count_elems) = nep
-                nep = elem_cnct(1,j,nep) ! next child branch
+                nep = elem_cnct(1,1,nep) ! next child branch
              enddo
              num_term_branches = num_term_branches + 1 ! increment number of new terminals
              list_branches(num_term_branches) = nep ! add to list for next generation
           enddo
        enddo
-       list_term_branches = list_branches
+       list_term_branches = 0
+       list_term_branches(1:num_term_branches) = list_branches(1:num_term_branches)
     enddo
     deallocate(list_branches)
     deallocate(list_term_branches)
@@ -3092,7 +3106,6 @@ contains
     do ne = 1,num_elems ! for the ordered elements
        ne_old = map_to_old(ne) ! the unordered element number
        temp_elems(ne) = elems(ne_old) ! mapping to global
-       write(*,*) 'new',ne,' is old local ',ne_old,' and old global ',elems(ne_old)
        forall (i=1:2) temp_elem_nodes(i,ne) = elem_nodes(i,ne_old)
        temp_elem_symmetry(ne) = elem_symmetry(ne_old)
        temp_elem_units_below(ne) = elem_units_below(ne_old)
@@ -3105,7 +3118,7 @@ contains
 
     deallocate(map_to_old)
     deallocate(map_to_new)
-    
+
     elems = temp_elems
     elem_nodes = temp_elem_nodes
     elem_symmetry = temp_elem_symmetry
@@ -3124,6 +3137,8 @@ contains
 
     call element_connectivity_1d
     call evaluate_ordering
+    
+    elem_ordrs(no_type,:) = 1 ! all conducting
     
     call enter_exit(sub_name,2)
 
@@ -3378,7 +3393,6 @@ contains
        vol_anat(ne0) = vol_anat(ne0) + dble(elem_symmetry(ne))*dble(elem_ordrs(no_type,ne))*vol_anat(ne)
        vol_below(ne0) = vol_below(ne0) + dble(elem_symmetry(ne))*dble(elem_ordrs(no_type,ne))*vol_below(ne)
     enddo !noelem
-
     elem_field(ne_vd_bel,:) = vol_anat(:)
     elem_field(ne_vol_bel,:) = vol_below(:)
     volume_model = elem_field(ne_vol_bel,1)
