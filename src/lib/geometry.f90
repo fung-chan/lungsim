@@ -46,6 +46,7 @@ module geometry
   public group_elem_parent_term
   public import_node_geometry_2d
   public import_ply_triangles
+  public internal_mesh_reorder
   public make_data_grid
   public make_2d_vessel_from_1d
   public reallocate_node_elem_arrays
@@ -444,6 +445,7 @@ contains
     !     Local Variables
     integer :: ibeg,iend,ierror,i_ss_end,j,ne,ne_global,&
          nn,np,np1,np2,np_global
+    logical :: internal_reorder
     character(LEN=132) :: ctemp1
     character(len=300) :: readfile
     character(LEN=40) :: sub_string
@@ -552,10 +554,20 @@ contains
     enddo
 
     call element_connectivity_1d
-    call evaluate_ordering
-
-    elem_ordrs(no_type,:) = 1 ! 0 for respiratory, 1 for conducting
-
+    ! check for child branches with lower element numbering than parents
+    internal_reorder = .false.
+    do ne = num_elems,1,-1
+       if(elem_cnct(-1,0,ne).ne.0)then
+          if(elem_cnct(-1,1,ne).gt.ne) internal_reorder = .true.
+       endif
+    enddo
+    if(internal_reorder)then
+       call internal_mesh_reorder()
+    else
+       call evaluate_ordering
+       elem_ordrs(no_type,:) = 1 ! 0 for respiratory, 1 for conducting
+    endif
+    
     call enter_exit(sub_name,2)
 
   end subroutine define_1d_elements
@@ -3027,6 +3039,113 @@ contains
 
 !!!#############################################################################
 
+  subroutine internal_mesh_reorder
+    !*internal_mesh_reorder:* reorder the mesh so that all elements and nodes are
+    ! sequential from the stem branches down
+
+    ! Local variables
+    integer :: count_elems,i,j,ne,nep,ne_old,ngen,num_branches,num_term_branches
+    integer,allocatable :: list_branches(:),list_term_branches(:),map_to_new(:), &
+         map_to_old(:),temp_elems(:),temp_elem_nodes(:,:),temp_elem_symmetry(:), &
+         temp_elem_units_below(:)
+    real(dp),allocatable :: temp_elem_direction(:,:),temp_elem_field(:,:)
+    logical,allocatable :: temp_expansile(:)
+    character(len=60) :: sub_name
+    
+    ! --------------------------------------------------------------------------
+    
+    sub_name = 'internal_mesh_reorder'
+    call enter_exit(sub_name,1)
+
+    allocate(list_branches(num_elems))
+    allocate(list_term_branches(num_elems))
+    allocate(map_to_new(num_elems))
+    allocate(map_to_old(num_elems))
+   
+    ! work through each successive generation, incrementing elements one by one
+    count_elems = 0
+    num_term_branches = 1
+    ngen = 0
+    list_term_branches(1) = 1 ! this assumes that the first element is the stem! 
+    do while(num_term_branches.ne.0)
+       num_branches = num_term_branches ! temporary, to loop over
+       num_term_branches = 0 ! reset to zero and count for this generation
+       ngen = ngen + 1
+       do i = 1,num_branches ! for each element in this generation
+          ne = list_term_branches(i)
+          count_elems = count_elems + 1
+          map_to_new(ne) = count_elems
+          map_to_old(count_elems) = ne
+          do j = 1,elem_cnct(1,0,ne) ! for each child
+             nep = elem_cnct(1,j,ne) ! child element number
+             ! check whether there are more elements in the same branch
+             do while(elem_cnct(1,0,nep).eq.1.and.elem_symmetry(nep).eq.1)
+                count_elems = count_elems + 1
+                map_to_new(nep) = count_elems
+                map_to_old(count_elems) = nep
+                nep = elem_cnct(1,1,nep) ! next child branch
+             enddo
+             num_term_branches = num_term_branches + 1 ! increment number of new terminals
+             list_branches(num_term_branches) = nep ! add to list for next generation
+          enddo
+       enddo
+       list_term_branches = 0
+       list_term_branches(1:num_term_branches) = list_branches(1:num_term_branches)
+    enddo
+    deallocate(list_branches)
+    deallocate(list_term_branches)
+
+    allocate(temp_elems(num_elems))
+    allocate(temp_elem_nodes(2,num_elems))
+    allocate(temp_elem_symmetry(num_elems))
+    allocate(temp_elem_units_below(num_elems))
+    allocate(temp_elem_field(num_ne,num_elems))
+    allocate(temp_elem_direction(3,num_elems))
+    if(model_type.eq.'gas_mix') allocate(temp_expansile(num_elems))
+    
+    do ne = 1,num_elems ! for the ordered elements
+       ne_old = map_to_old(ne) ! the unordered element number
+       temp_elems(ne) = elems(ne_old) ! mapping to global
+       forall (i=1:2) temp_elem_nodes(i,ne) = elem_nodes(i,ne_old)
+       temp_elem_symmetry(ne) = elem_symmetry(ne_old)
+       temp_elem_units_below(ne) = elem_units_below(ne_old)
+       temp_elem_field(ne_length,ne) = elem_field(ne_length,ne)
+       forall(i=1:3) temp_elem_direction(i,ne) = elem_direction(i,ne_old)
+       if(model_type.eq.'gas_mix')then
+          temp_expansile(ne) = expansile(ne_old)
+       endif
+    enddo
+
+    deallocate(map_to_old)
+    deallocate(map_to_new)
+
+    elems = temp_elems
+    elem_nodes = temp_elem_nodes
+    elem_symmetry = temp_elem_symmetry
+    elem_units_below = temp_elem_units_below
+    elem_field = temp_elem_field
+    elem_direction = temp_elem_direction
+    if(model_type.eq.'gas_mix') expansile = temp_expansile
+
+    deallocate(temp_elems)
+    deallocate(temp_elem_nodes)
+    deallocate(temp_elem_symmetry)
+    deallocate(temp_elem_units_below)
+    deallocate(temp_elem_field)
+    deallocate(temp_elem_direction)
+    if(model_type.eq.'gas_mix') deallocate(temp_expansile)
+
+    call element_connectivity_1d
+    call evaluate_ordering
+    
+    elem_ordrs(no_type,:) = 1 ! all conducting
+    
+    call enter_exit(sub_name,2)
+
+  end subroutine internal_mesh_reorder
+  
+!!!#############################################################################
+
   subroutine evaluate_ordering()
     !*evaluate_ordering:* calculates generations, Horsfield orders,
     ! Strahler orders for a given tree
@@ -3274,7 +3393,6 @@ contains
        vol_anat(ne0) = vol_anat(ne0) + dble(elem_symmetry(ne))*dble(elem_ordrs(no_type,ne))*vol_anat(ne)
        vol_below(ne0) = vol_below(ne0) + dble(elem_symmetry(ne))*dble(elem_ordrs(no_type,ne))*vol_below(ne)
     enddo !noelem
-
     elem_field(ne_vd_bel,:) = vol_anat(:)
     elem_field(ne_vol_bel,:) = vol_below(:)
     volume_model = elem_field(ne_vol_bel,1)
@@ -3694,6 +3812,7 @@ contains
     nodelem_temp = nodes ! copy to temporary array
     deallocate(nodes) !deallocate initially allocated memory
     allocate(nodes(num_nodes_new))
+    nodes = 0
     nodes(1:num_nodes)=nodelem_temp(1:num_nodes)
     deallocate(nodelem_temp) !deallocate the temporary array
 
@@ -3701,12 +3820,14 @@ contains
     xyz_temp=node_xyz
     deallocate(node_xyz)
     allocate(node_xyz(3,num_nodes_new))
+    node_xyz = 0.0_dp
     node_xyz(1:3,1:num_nodes)=xyz_temp(1:3,1:num_nodes)
 
     allocate(nodelem_temp(num_elems))
     nodelem_temp = elems ! copy to temporary array
     deallocate(elems) !deallocate initially allocated memory
     allocate(elems(num_elems_new))
+    elems = 0
     elems(1:num_elems)=nodelem_temp(1:num_elems)
     deallocate(nodelem_temp) !deallocate the temporary array
 
@@ -3714,6 +3835,7 @@ contains
     enodes_temp=elem_nodes
     deallocate(elem_nodes)
     allocate(elem_nodes(2,num_elems_new))
+    elem_nodes = 0
     elem_nodes(1:2,1:num_elems)=enodes_temp(1:2,1:num_elems)
     deallocate(enodes_temp)
 
@@ -3722,79 +3844,79 @@ contains
        rnodes_temp=elem_field
        deallocate(elem_field)
        allocate(elem_field(num_ne,num_elems_new))
+       elem_field = 0.0_dp
        elem_field(1:num_ne,1:num_elems)=rnodes_temp(1:num_ne,1:num_elems)
        deallocate(rnodes_temp)
-       elem_field(1:num_ne,num_elems+1:num_elems_new) = 0.0_dp
     endif
 
     allocate(rnodes_temp(3,num_elems))
     rnodes_temp=elem_direction
     deallocate(elem_direction)
     allocate(elem_direction(3,num_elems_new))
+    elem_direction = 0.0_dp
     elem_direction(1:3,1:num_elems)=rnodes_temp(1:3,1:num_elems)
     deallocate(rnodes_temp)
-    elem_direction(1:3,num_elems+1:num_elems_new) = 0.0_dp
 
     if(allocated(node_field).and.num_nj.gt.0)then
        allocate(rnodes_temp(num_nj,num_nodes))
        rnodes_temp=node_field
        deallocate(node_field)
        allocate(node_field(num_nj,num_nodes_new))
+       node_field = 0.0_dp
        node_field(1:num_nj,1:num_nodes)=rnodes_temp(1:num_nj,1:num_nodes)
        deallocate(rnodes_temp)
-       node_field(1:num_nj,num_nodes+1:num_nodes_new)=0.0_dp
     endif
 
     allocate(nodelem_temp(num_elems))
     nodelem_temp = elem_symmetry ! copy to temporary array
     deallocate(elem_symmetry) !deallocate initially allocated memory
     allocate(elem_symmetry(num_elems_new))
+    elem_symmetry = 1
     elem_symmetry(1:num_elems)=nodelem_temp(1:num_elems)
     deallocate(nodelem_temp) !deallocate the temporary array
-    elem_symmetry(num_elems+1:num_elems_new)=1
 
     allocate(enodes_temp2(-1:1,0:2,0:num_elems))
     enodes_temp2=elem_cnct
     deallocate(elem_cnct)
     allocate(elem_cnct(-1:1,0:2,0:num_elems_new))
+    elem_cnct = 0
     elem_cnct(-1:1,0:2,0:num_elems)=enodes_temp2(-1:1,0:2,0:num_elems)
     deallocate(enodes_temp2)
-    elem_cnct(-1:1,0:2,num_elems+1:num_elems_new) = 0
 
     allocate(enodes_temp(num_ord,num_elems))
     enodes_temp=elem_ordrs
     deallocate(elem_ordrs)
     allocate(elem_ordrs(num_ord,num_elems_new))
+    elem_ordrs = 0
     elem_ordrs(1:num_ord,1:num_elems)=enodes_temp(1:num_ord,1:num_elems)
     deallocate(enodes_temp)
-    elem_ordrs(1:num_ord,num_elems+1:num_elems_new) = 0
 
     if(allocated(elem_units_below).and.num_nu.gt.0)then
        allocate(nodelem_temp(num_elems))
        nodelem_temp=elem_units_below
        deallocate(elem_units_below)
        allocate(elem_units_below(num_elems_new))
+       elem_units_below = 0
        elem_units_below(1:num_elems)=nodelem_temp(1:num_elems)
        deallocate(nodelem_temp)
-       elem_units_below(num_elems+1:num_elems_new)=0
     endif
 
     allocate(enodes_temp(num_nodes,0:3))
     enodes_temp=elems_at_node
     deallocate(elems_at_node)
     allocate(elems_at_node(num_nodes_new,0:3))
+    elems_at_node = 0
     elems_at_node(1:num_nodes,0:3)=enodes_temp(1:num_nodes,0:3)
     deallocate(enodes_temp)
-    elems_at_node(num_nodes+1:num_nodes_new,0:3)=0
 
     if(model_type.eq.'gas_mix')then
        allocate(exp_temp(num_elems))
        exp_temp = expansile
        deallocate(expansile)
        allocate(expansile(num_elems_new))
+       expansile = .false.
        expansile(1:num_elems)=exp_temp(1:num_elems)
        deallocate(exp_temp)
-       expansile(num_elems+1:num_elems_new)=.false.
     endif
 
     call enter_exit(sub_name,2)
